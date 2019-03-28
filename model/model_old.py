@@ -164,18 +164,10 @@ class CoopNets(object):
         # train
         for epoch in xrange(self.num_epochs):
             start_time = time.time()
-            origin_des_loss_avg, origin_gen_loss_avg, origin_mse_avg = [], [], []
+            des_loss_avg, gen_loss_avg, mse_avg = [], [], []
             for i in xrange(num_batches):
 
-                """ the first model for training original domain
-                
-                """
                 obs_data = train_data[i * self.batch_size:min(len(train_data), (i + 1) * self.batch_size)]
-
-
-                """ the first model for training original domain
-                
-                """
 
                 # Step G0: generate X ~ N(0, 1)
                 z_vec = np.random.randn(self.num_chain, self.z_size)
@@ -197,17 +189,12 @@ class CoopNets(object):
                 mse = sess.run(self.recon_err, feed_dict={self.obs: syn, self.syn: g_res})
                 sample_results[i * self.num_chain:(i + 1) * self.num_chain] = syn
 
-                origin_des_loss_avg.append(d_loss)
-                origin_gen_loss_avg.append(g_loss)
-                origin_mse_avg.append(mse)
+                des_loss_avg.append(d_loss)
+                gen_loss_avg.append(g_loss)
+                mse_avg.append(mse)
 
                 des_loss_vis.add_loss_val(epoch*num_batches + i, d_loss / float(self.image_size * self.image_size * 3))
                 gen_loss_vis.add_loss_val(epoch*num_batches + i, mse)
-
-
-                """ the second model for training target domain
-                
-                """
 
                 if self.debug:
                     print('Epoch #{:d}, [{:2d}]/[{:2d}], descriptor loss: {:.4f}, generator loss: {:.4f}, '
@@ -220,7 +207,7 @@ class CoopNets(object):
 
             end_time = time.time()
             print('Epoch #{:d}, avg.descriptor loss: {:.4f}, avg.generator loss: {:.4f}, avg.L2 distance: {:4.4f}, '
-                  'time: {:.2f}s'.format(epoch, np.mean(origin_des_loss_avg), np.mean(origin_gen_loss_avg), np.mean(origin_mse_avg), end_time - start_time))
+                  'time: {:.2f}s'.format(epoch, np.mean(des_loss_avg), np.mean(gen_loss_avg), np.mean(mse_avg), end_time - start_time))
 
             if epoch % self.log_step == 0:
                 if not os.path.exists(self.model_dir):
@@ -232,6 +219,7 @@ class CoopNets(object):
 
                 des_loss_vis.draw_figure()
                 gen_loss_vis.draw_figure()
+
 
     def test(self, sess, ckpt, sample_size):
         assert ckpt is not None, 'no checkpoint provided.'

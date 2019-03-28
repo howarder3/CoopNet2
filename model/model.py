@@ -99,7 +99,7 @@ class CoopNets(object):
 
         self.summary_op = tf.summary.merge_all()
 
-    def langevin_dynamics_descriptor(self, syn_arg):
+    def origin_langevin_dynamics_descriptor(self, syn_arg):
         def cond(i, syn):
             return tf.less(i, self.t1)
 
@@ -115,7 +115,41 @@ class CoopNets(object):
             i, syn = tf.while_loop(cond, body, [i, syn_arg])
             return syn
 
-    def langevin_dynamics_generator(self, z_arg):
+    def origin_langevin_dynamics_generator(self, z_arg):
+        def cond(i, z):
+            return tf.less(i, self.t2)
+
+        def body(i, z):
+            noise = tf.random_normal(shape=[self.num_chain, self.z_size], name='noise')
+            gen_res = self.generator(z, reuse=True)
+            gen_loss = tf.reduce_mean(1.0 / (2 * self.sigma2 * self.sigma2) * tf.square(self.obs - gen_res),
+                                       axis=0)
+            grad = tf.gradients(gen_loss, z, name='grad_gen')[0]
+            z = z - 0.5 * self.delta2 * self.delta2 * (z + grad) + self.delta2 * noise
+            return tf.add(i, 1), z
+
+        with tf.name_scope("langevin_dynamics_generator"):
+            i = tf.constant(0)
+            i, z = tf.while_loop(cond, body, [i, z_arg])
+            return z
+
+    def target_langevin_dynamics_descriptor(self, syn_arg):
+        def cond(i, syn):
+            return tf.less(i, self.t1)
+
+        def body(i, syn):
+            noise = tf.random_normal(shape=[self.num_chain, self.image_size, self.image_size, 3], name='noise')
+            syn_res = self.descriptor(syn, reuse=True)
+            grad = tf.gradients(syn_res, syn, name='grad_des')[0]
+            syn = syn - 0.5 * self.delta1 * self.delta1 * (syn / self.sigma1 / self.sigma1 - grad) + self.delta1 * noise
+            return tf.add(i, 1), syn
+
+        with tf.name_scope("langevin_dynamics_descriptor"):
+            i = tf.constant(0)
+            i, syn = tf.while_loop(cond, body, [i, syn_arg])
+            return syn
+
+    def target_langevin_dynamics_generator(self, z_arg):
         def cond(i, z):
             return tf.less(i, self.t2)
 
@@ -137,13 +171,14 @@ class CoopNets(object):
         self.build_model()
 
         # Prepare training data
-        train_data = DataSet(self.data_path, image_size=self.image_size)
-        num_batches = int(math.ceil(len(train_data) / self.batch_size))
+        origin_train_data = DataSet(self.data_path, image_size=self.image_size)
+        target_train_data = DataSet(self.data_path, image_size=self.image_size)
+        num_batches = int(math.ceil(len(origin_train_data) / self.batch_size))
 
         # initialize training
         sess.run(tf.global_variables_initializer())
 
-        sample_results = np.random.randn(self.num_chain * num_batches, self.image_size, self.image_size, 3)
+        # sample_results = np.random.randn(self.num_chain * num_batches, self.image_size, self.image_size, 3)
 
         saver = tf.train.Saver(max_to_keep=50)
 
@@ -164,37 +199,73 @@ class CoopNets(object):
         # train
         for epoch in xrange(self.num_epochs):
             start_time = time.time()
-            des_loss_avg, gen_loss_avg, mse_avg = [], [], []
+            origin_des_loss_avg, origin_gen_loss_avg, origin_mse_avg = [], [], []
+            target_des_loss_avg, target_gen_loss_avg, target_mse_avg = [], [], []
             for i in xrange(num_batches):
 
-                obs_data = train_data[i * self.batch_size:min(len(train_data), (i + 1) * self.batch_size)]
+                """ training original domain  """
+                origin_obs_data = origin_train_data[i * self.batch_size:min(len(origin_train_data), (i + 1) * self.batch_size)]
 
-                # Step G0: generate X ~ N(0, 1)
-                z_vec = np.random.randn(self.num_chain, self.z_size)
-                g_res = sess.run(self.gen_res, feed_dict={self.z: z_vec})
-                # Step D1: obtain synthesized images Y
+                # Step ori_G0: generate X ~ N(0, 1)
+                origin_z_vec = np.random.randn(self.num_chain, self.z_size)
+                origin_g_res = sess.run(self.gen_res, feed_dict={self.z: origin_z_vec})
+                # Step ori_D1: obtain synthesized images Y
                 if self.t1 > 0:
-                    syn = sess.run(self.langevin_descriptor, feed_dict={self.syn: g_res})
-                # Step G1: update X using Y as training image
+                    origin_syn = sess.run(self.langevin_descriptor, feed_dict={self.syn: origin_g_res})
+                # Step ori_G1: update X using Y as training image
                 if self.t2 > 0:
-                    z_vec = sess.run(self.langevin_generator, feed_dict={self.z: z_vec, self.obs: syn})
-                # Step D2: update D net
-                d_loss = sess.run([self.des_loss, self.apply_d_grads],
-                                  feed_dict={self.obs: obs_data, self.syn: syn})[0]
-                # Step G2: update G net
-                g_loss = sess.run([self.gen_loss, self.apply_g_grads],
-                                  feed_dict={self.obs: syn, self.z: z_vec})[0]
+                    origin_z_vec = sess.run(self.langevin_generator, feed_dict={self.z: origin_z_vec, self.obs: origin_syn})
+                # Step ori_D2: update D net
+                origin_d_loss = sess.run([self.des_loss, self.apply_d_grads],
+                                  feed_dict={self.obs: origin_obs_data, self.syn: origin_syn})[0]
+                # Step ori_G2: update G net
+                origin_g_loss = sess.run([self.gen_loss, self.apply_g_grads],
+                                  feed_dict={self.obs: origin_syn, self.z: origin_z_vec})[0]
 
                 # Compute MSE for generator
-                mse = sess.run(self.recon_err, feed_dict={self.obs: syn, self.syn: g_res})
-                sample_results[i * self.num_chain:(i + 1) * self.num_chain] = syn
+                origin_mse = sess.run(self.recon_err, feed_dict={self.obs: origin_syn, self.syn: origin_g_res})
+                # sample_results[i * self.num_chain:(i + 1) * self.num_chain] = origin_syn
 
-                des_loss_avg.append(d_loss)
-                gen_loss_avg.append(g_loss)
-                mse_avg.append(mse)
+                origin_des_loss_avg.append(d_loss)
+                origin_gen_loss_avg.append(g_loss)
+                origin_mse_avg.append(mse)
 
-                des_loss_vis.add_loss_val(epoch*num_batches + i, d_loss / float(self.image_size * self.image_size * 3))
-                gen_loss_vis.add_loss_val(epoch*num_batches + i, mse)
+                origin_des_loss_vis.add_loss_val(epoch*num_batches + i, origin_d_loss / float(self.image_size * self.image_size * 3))
+                origin_gen_loss_vis.add_loss_val(epoch*num_batches + i, origin_mse)
+
+
+                """ training target domain """
+                target_obs_data = target_train_data[i * self.batch_size:min(len(target_train_data), (i + 1) * self.batch_size)]
+
+                # Step tar_G0: generate X ~ N(0, 1)
+                target_z_vec = np.random.randn(self.num_chain, self.z_size)
+                target_g_res = sess.run(self.gen_res, feed_dict={self.z: target_z_vec})
+                # Step tar_D1: obtain synthesized images Y
+                if self.t1 > 0:
+                    target_syn = sess.run(self.langevin_descriptor, feed_dict={self.syn: target_g_res})
+                # Step tar_G1: update X using Y as training image
+                if self.t2 > 0:
+                    target_z_vec = sess.run(self.langevin_generator, feed_dict={self.z: target_z_vec, self.obs: target_syn})
+                # Step tar_D2: update D net
+                target_d_loss = sess.run([self.des_loss, self.apply_d_grads],
+                                  feed_dict={self.obs: target_obs_data, self.syn: target_syn})[0]
+                # Step tar_G2: update G net
+                target_g_loss = sess.run([self.gen_loss, self.apply_g_grads],
+                                  feed_dict={self.obs: target_syn, self.z: target_z_vec})[0]
+
+                # Compute MSE for generator
+                target_mse = sess.run(self.recon_err, feed_dict={self.obs: target_syn, self.syn: target_g_res})
+                # sample_results[i * self.num_chain:(i + 1) * self.num_chain] = syn
+
+                target_des_loss_avg.append(d_loss)
+                target_gen_loss_avg.append(g_loss)
+                target_mse_avg.append(mse)
+
+                target_des_loss_vis.add_loss_val(epoch*num_batches + i, target_d_loss / float(self.image_size * self.image_size * 3))
+                target_gen_loss_vis.add_loss_val(epoch*num_batches + i, target_mse)
+
+
+                """ debug """
 
                 if self.debug:
                     print('Epoch #{:d}, [{:2d}]/[{:2d}], descriptor loss: {:.4f}, generator loss: {:.4f}, '
@@ -207,7 +278,9 @@ class CoopNets(object):
 
             end_time = time.time()
             print('Epoch #{:d}, avg.descriptor loss: {:.4f}, avg.generator loss: {:.4f}, avg.L2 distance: {:4.4f}, '
-                  'time: {:.2f}s'.format(epoch, np.mean(des_loss_avg), np.mean(gen_loss_avg), np.mean(mse_avg), end_time - start_time))
+                  'time: {:.2f}s'.format(epoch, np.mean(origin_des_loss_avg), np.mean(origin_gen_loss_avg), np.mean(origin_mse_avg), end_time - start_time))
+            print('Epoch #{:d}, avg.descriptor loss: {:.4f}, avg.generator loss: {:.4f}, avg.L2 distance: {:4.4f}, '
+                  'time: {:.2f}s'.format(epoch, np.mean(target_des_loss_avg), np.mean(target_gen_loss_avg), np.mean(target_mse_avg), end_time - start_time))
 
             if epoch % self.log_step == 0:
                 if not os.path.exists(self.model_dir):
@@ -219,7 +292,6 @@ class CoopNets(object):
 
                 des_loss_vis.draw_figure()
                 gen_loss_vis.draw_figure()
-
 
     def test(self, sess, ckpt, sample_size):
         assert ckpt is not None, 'no checkpoint provided.'
