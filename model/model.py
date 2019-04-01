@@ -186,6 +186,7 @@ class CoopNets(object):
         tf.get_default_graph().finalize()
 
         # store graph in protobuf
+        '''
         with open(self.model_dir + '/graph.proto', 'w') as f:
             f.write(str(tf.get_default_graph().as_graph_def()))
 
@@ -194,7 +195,7 @@ class CoopNets(object):
 
         gen_loss_vis = Visualizer(title='generator', ylabel='reconstruction error',
                                   save_figpath=self.log_dir + '/gen_loss.png', avg_period = self.batch_size)
-
+        '''
 
         # train
         for epoch in xrange(self.num_epochs):
